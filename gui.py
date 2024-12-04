@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget,
     QLabel, QLineEdit, QSpinBox, QHBoxLayout, QSlider, QDoubleSpinBox,QSplitter, QGroupBox
 )
-from PyQt5.QtCore import Qt, QMetaObject, Q_ARG
+from PyQt5.QtCore import Qt, QMetaObject, Q_ARG, QTime
 from PyQt5.QtGui import QImage, QPixmap
 import cv2
 import threading
@@ -17,6 +17,46 @@ import os
 import queue
 os.add_dll_directory("C:\Windows\System32")
 
+
+from PyQt5.QtWidgets import QLabel, QLineEdit, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtCore import QTime
+
+class TimePicker(QWidget):
+    """Custom widget for entering capture duration in days:hours:minutes:seconds."""
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QHBoxLayout()
+
+        self.time_input = QLineEdit()
+        self.time_input.setPlaceholderText("dd:hh:mm:ss")
+        self.time_input.setInputMask("00:00:00:00")  # Mask for days:hours:minutes:seconds
+        self.time_input.installEventFilter(self)  # Filter input events to handle mouse click
+        self.time_input.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.time_input)
+
+        self.setLayout(layout)
+
+    def get_duration_in_seconds(self):
+        """Parse the time input and return total duration in seconds."""
+        text = self.time_input.text()
+        try:
+            days, hours, minutes, seconds = map(int, text.split(":"))
+            return days * 86400 + hours * 3600 + minutes * 60 + seconds
+        except ValueError:
+            return 0
+        
+    def eventFilter(self, source, event):
+        """
+        Handle a mouse click to properly set cursor position in the QLineEdit.
+        """
+        if source==self.time_input and event.type()==event.MouseButtonPress:
+            self.time_input.setFocus()
+            self.time_input.setCursorPosition(0)
+            return True
+        return super().eventFilter(source, event)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -33,26 +73,8 @@ class MainWindow(QMainWindow):
         self.initialize_camera()
         self.initialize_arduino()
 
-# CONFIGURATION
+# CONFIGURATION (saves to/loads from the config.yml file so settings can be saved between sessions)
 
-    def save_config(self):
-        """Save current settings to config.yml."""
-        self.config["CAMERA"] = {
-            "EXPOSURE_TIME": self.camera_exposure_input.value(),
-            "ANALOG_GAIN": self.camera_gain_slider.value(),
-        }
-        self.config["ARDUINO"] = {
-            "PORT": self.arduino_port_input.text(),
-            "F_LED": self.f_led_input.value(),
-            "E_LED": self.e_led_input.value(),
-            "T_CAM": self.t_cam_input.value(),
-            "O_CAM": self.o_cam_input.value(),
-            "EXTERN": self.extern_input.value(),
-        }
-
-        with open("config.yml", "w") as f:
-            yaml.dump(self.config, f)
-        print("Configuration saved.")
 
     def load_config(self):
         """Load settings from config.yml into self.config."""
@@ -68,7 +90,10 @@ class MainWindow(QMainWindow):
         self.config.setdefault("CAMERA", {
             "EXPOSURE_TIME": 1.0,
             "ANALOG_GAIN": 10,
+            "SAVE_DIR": "C://OWFI/",
+            "CAPTURE_DURATION": 0 # 0 means perpetual capture
         })
+
         self.config.setdefault("ARDUINO", {
             "PORT": "COM3",
             "F_LED": 25,
@@ -77,11 +102,36 @@ class MainWindow(QMainWindow):
             "O_CAM": 2,
             "EXTERN": 0,
         })
-        self.config.setdefault("CAMERA", {}).setdefault("SAVE_DIR", "C://OWFI/")
+
+
+    def save_config(self):
+        """Save current settings to config.yml."""
+        # Camera config
+        self.config["CAMERA"] = {
+            "EXPOSURE_TIME": self.camera_exposure_input.value(),
+            "ANALOG_GAIN": self.camera_gain_slider.value(),
+            "SAVE_DIR": self.config["CAMERA"].get("SAVE_DIR", "C://OWFI/"),  # Keep existing save directory
+            "CAPTURE_DURATION": self.capture_duration_input.value(),
+        }
+        # Arduino config
+        self.config["ARDUINO"] = {
+            "PORT": self.arduino_port_input.text(),
+            "F_LED": self.f_led_input.value(),
+            "E_LED": self.e_led_input.value(),
+            "T_CAM": self.t_cam_input.value(),
+            "O_CAM": self.o_cam_input.value(),
+            "EXTERN": self.extern_input.value(),
+        }
+
+        with open("config.yml", "w") as f:
+            yaml.dump(self.config, f)
+        print("Configuration saved.")
 
 # GUI
-
     def init_ui(self):
+        """
+        Initialize the user interface layout and widgets.
+        """
         self.setWindowTitle("Open Wide-Field Imaging GUI")
         self.setGeometry(100, 100, 1200, 700)
 
@@ -125,6 +175,36 @@ class MainWindow(QMainWindow):
         )
 
         camera_group.setLayout(camera_layout)
+
+        # Time Input Widget
+        duration_label = QLabel("Capture Duration (hh:mm:ss):")
+        duration_label.setAlignment(Qt.AlignCenter)
+        duration_label.setStyleSheet("font-size: 14px; color: white;")
+
+        time_input_layout = QHBoxLayout()
+
+        self.hours_input = QSpinBox()
+        self.hours_input.setRange(0, 23)  # Max 23 hours
+        self.hours_input.setSuffix(" h")
+        self.hours_input.setStyleSheet("color: white;")
+        time_input_layout.addWidget(self.hours_input)
+
+        self.minutes_input = QSpinBox()
+        self.minutes_input.setRange(0, 59)  # Max 59 minutes
+        self.minutes_input.setSuffix(" m")
+        self.minutes_input.setStyleSheet("color: white;")
+        time_input_layout.addWidget(self.minutes_input)
+
+        self.seconds_input = QSpinBox()
+        self.seconds_input.setRange(0, 59)  # Max 59 seconds
+        self.seconds_input.setSuffix(" s")
+        self.seconds_input.setStyleSheet("color: white;")
+        time_input_layout.addWidget(self.seconds_input)
+
+        time_input_widget = QWidget()
+        time_input_widget.setLayout(time_input_layout)
+
+
 
         # Arduino Settings Group
         arduino_group = QGroupBox("Arduino Settings")
@@ -224,7 +304,18 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)  # Settings smaller
 
         main_layout.addWidget(splitter)
-        main_layout.addWidget(button_widget)  # Buttons below the splitter
+
+        # Time Picker for Capture Duration
+        duration_label = QLabel("Capture Duration (dd:hh:mm:ss):")
+        duration_label.setAlignment(Qt.AlignCenter)
+        duration_label.setStyleSheet("font-size: 14px; color: white;")
+
+        self.time_picker = TimePicker()
+
+        main_layout.addWidget(duration_label)
+        main_layout.addWidget(self.time_picker)
+        main_layout.addWidget(button_widget)  # Buttons below the time picker
+
 
         container = QWidget()
         container.setLayout(main_layout)
@@ -235,46 +326,46 @@ class MainWindow(QMainWindow):
 
     def initialize_camera(self):
         try:
+            # list available cameras
             DevList = mvsdk.CameraEnumerateDevice()
             if len(DevList) < 1:
                 print("No camera found!")
+                self.video_label.setText("No camera found!")
                 return
 
-            DevInfo = DevList[0]  # Select the first camera
+            # select the first available camera
+            DevInfo = DevList[0]  
             self.hCamera = mvsdk.CameraInit(DevInfo, -1, -1)
 
+            # Get camera capabilities
             cap = mvsdk.CameraGetCapability(self.hCamera)
-            print(f"Expected buffer size: {cap.sResolutionRange.iWidthMax * cap.sResolutionRange.iHeightMax}")  
-            
-
+            print(f"Expected buffer size: {cap.sResolutionRange.iWidthMax * cap.sResolutionRange.iHeightMax}") 
             self.height = cap.sResolutionRange.iHeightMax
             self.width = cap.sResolutionRange.iWidthMax
             print(f"Camera resolution: {self.width}x{self.height}")
 
             # Configure the camera
-            mvsdk.CameraSetTriggerMode(self.hCamera, 2) # HARDWARE trigger
+            mvsdk.CameraSetTriggerMode(self.hCamera, 0) # continuous mode at launch for live preview
             mvsdk.CameraSetFrameSpeed(self.hCamera, 1)  # High-speed mode
             mvsdk.CameraSetAeState(self.hCamera, 0)  # Manual exposure
             mvsdk.CameraSetExposureTime(self.hCamera, self.camera_exposure_input.value() * 1000)  # Initial exposure
             mvsdk.CameraSetAnalogGain(self.hCamera, self.camera_gain_slider.value())  # Initial gain
             mvsdk.CameraPlay(self.hCamera)  # Start the camera
 
+            # allocate frame buffer
+            FrameBufferSize = cap.sResolutionRange.iWidthMax * cap.sResolutionRange.iHeightMax
+            self.pFrameBuffer = mvsdk.CameraAlignMalloc(FrameBufferSize, 16)
+
             # start live feed thread
             self.camera_running = True
             self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
             self.display_thread.start()
 
-            # set callback
-            mvsdk.CameraSetCallbackFunction(self.hCamera, self.GrabCallback, None)
-
             print("Camera initialized successfully.")
 
         except Exception as e:
             print(f"Failed to initialize the camera: {e}")
-            # self.start_button.setEnabled(False)
-            # self.stop_button.setEnabled(False)
-
-    
+            self.video_label.setText("Failed to initialize the camera. Check console for details.")
 
     def initialize_arduino(self):
         try:
@@ -286,19 +377,23 @@ class MainWindow(QMainWindow):
             print(f"Could not connect to Arduino: {e}")
             print("You can connect it later and retry using the 'Retry Arduino' button.")
     
-    # try to close out gracefully so we don't ruin our threads
     def closeEvent(self, event):
+        """
+        Handle the window close event gracefully if possible
+        """
         self.save_config()  # Save current settings
         self.camera_running = False
         if self.display_thread:
             self.display_thread.join()
         if self.hCamera:
             mvsdk.CameraUnInit(self.hCamera)
+        if hasattr(self, "pFrameBuffer"):
+            mvsdk.CameraAlignFree(self.pFrameBuffer)
         if self.arduino:
             self.arduino.close()
         event.accept()
 
-    # looking back at it I hate this function and should probably just remove it
+    # there is very probably a less lame way to do this
     def retry_arduino_connection(self):
         self.initialize_arduino()
 
@@ -324,9 +419,10 @@ class MainWindow(QMainWindow):
 
         # Construct the parameter string
         params = f"S {self.f_led_input.value()} {self.e_led_input.value()} {self.t_cam_input.value()} {self.o_cam_input.value()} {self.extern_input.value()}\n"
-        self.send_arduino_command(params)
+        response = self.send_arduino_command(params)
         print(f"Sent parameters: {params.strip()}")
-        self.send_arduino_command('X\n')  # Command Arduino to begin capture
+        if response:
+            print(f"Arduino response: {response}")
 
     def start_capture(self):
         """Start the capture process, including initializing Arduino, setting parameters, and starting the signal generator."""
@@ -334,40 +430,54 @@ class MainWindow(QMainWindow):
             print("Arduino not connected.")
             return
 
-        # Step 1: Ensure Arduino is ready
-        print("Starting Arduino signal generator...")
+        
+        self.camera_running = False  # Stop the live preview
+
+        if self.display_thread:
+            self.display_thread.join()  # Wait for the display thread to stop
 
 
-        # Step 2: Set parameters
-        print("Setting parameters...")
-        params = f"S {self.freq_input.value()} {self.exposure_input.value()} {self.trigger_duration_input.value()} {self.trigger_offset_input.value()} {self.external_acquire_input.value()}\n"
-        self.send_arduino_command(params) # Send parameters to Arduino
-        print(f"Sent parameters: {params.strip()}")
-
-        # Step 3: Start capturing
+        # Start capturing
         print("Triggering capture...")
+        self.switch_trigger_mode(2)  # Switch to hardware trigger mode
         self.send_arduino_command(b'X\n')  # Command Arduino to begin capture
-        self.camera_running = True
-        self.camera_feed_event.set()  # Start the camera feed
+        print("Capture started. Hardware trigger mode enabled.")
+
+        # Set up capture duration
+        capture_duration = self.time_picker.get_duration_in_seconds()
+        if capture_duration > 0:
+            self.video_label.setStyleSheet("background-color: black; color: white; font-size: 24px;")
+            threading.Timer(capture_duration, self.stop_capture).start()
+            print(f"Capture will stop automatically after {capture_duration} seconds.")
+
 
     def stop_capture(self):
         """Stop the capture process by sending the appropriate command to the Arduino."""
         if not self.arduino:
             print("Arduino not connected.")
             return
+        
+        try:
+            print("Stopping capture...")
+            self.send_arduino_command(b'Q\n')  # Command Arduino to stop capturing
+            self.switch_trigger_mode(0)  # Switch back to continuous mode
 
-        print("Stopping capture...")
-        self.send_arduino_command(b'Q\n')  # Command Arduino to stop capturing
-        self.camera_running = False 
-        self.camera_feed_event.clear() # Stop the camera feed
-        self.send_arduino_command(b'STOP\n')  # might need to replace stop command with whatever the arduino code uses
-        # Reset the live preview
-        self.video_label.setStyleSheet("background-color: black;")
-        self.video_label.setText("Live Preview")
+
+            # Reset the live preview
+            if not self.display_thread or not self.display_thread.is_alive(): # making sure only one threat is running at a time
+                self.camera_running = True
+                self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
+                self.display_thread.start()
+            
+        
+        except Exception as e:
+            print(f"Failed to stop capture: {e}")
+
+
 
 # CAMERA CONTROL
 
-
+    # Callback function for camera frames
     @mvsdk.method(mvsdk.CAMERA_SNAP_PROC)
     def GrabCallback(self, hCamera, pRawData, pFrameHead, pContext):
         # print("GrabCallback") 
@@ -380,7 +490,49 @@ class MainWindow(QMainWindow):
             mvsdk.CameraReleaseImageBuffer(hCamera, pRawData)
 
 
+    def switch_trigger_mode(self, mode):
+        """Switch the camera's trigger mode.
+        
+        0: Continuous mode, suitable for live view
 
+        
+        2: Hardware trigger mode, capturing frames when trigger is recieved from the arduino
+        """
+        # Map mode numbers to human-readable strings
+        mode_map = {
+            0: "continuous recording",
+            2: "hardware trigger"
+        }
+        try:
+            mvsdk.CameraSetTriggerMode(self.hCamera, mode)
+            print(f"Trigger mode set to {mode_map[mode]}.")
+        except Exception as e:
+            print(f"Failed to set trigger mode: {e}")
+
+    def display_frames(self):
+        print("Display frames thread started.")
+        while self.camera_running:
+            try:
+                # Capture a frame
+                FrameHead, pFrameBuffer, FrameData = mvsdk.CameraGetImageBuffer(self.hCamera, 200)
+                frame = np.frombuffer(FrameData, dtype=np.uint8).reshape((FrameHead.iHeight, FrameHead.iWidth))
+
+                # Convert to QImage for display
+                h, w = frame.shape
+                bytes_per_line = w  # Grayscale has one byte per pixel
+                q_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
+
+                # Update QLabel
+                pixmap = QPixmap.fromImage(q_image)
+                self.video_label.setPixmap(pixmap)
+
+                # Release the buffer
+                mvsdk.CameraReleaseImageBuffer(self.hCamera, FrameHead)
+            except mvsdk.CameraException as e:
+                print(f"Error capturing frame: {e}")
+                break
+
+        print("Live preview stopped.")
 
     def save_frames(self):
         """Capture and save the current frame."""
@@ -416,22 +568,6 @@ class MainWindow(QMainWindow):
             print(f"Gain adjusted to {value}")
         except Exception as e:
             print(f"Failed to adjust gain: {e}")
-
-    def save_frames(self):
-        """Capture and save the current frame."""
-        try:
-            FrameHead, pFrameBuffer, FrameData = mvsdk.CameraGetImageBuffer(self.hCamera, 200)
-            frame = np.frombuffer(FrameData, dtype=np.uint8)
-            frame = frame.reshape((FrameHead.iHeight, FrameHead.iWidth))
-
-            filename = f"capture_{int(time.time())}.jpg"
-            cv2.imwrite(filename, frame)
-            print(f"Frame saved as {filename}")
-
-            mvsdk.CameraReleaseImageBuffer(self.hCamera, FrameHead)
-        except Exception as e:
-            print(f"Failed to save frame: {e}")
-
 
 
 # Run the application
